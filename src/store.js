@@ -1,4 +1,4 @@
-import { createContext, useState } from "react";
+import { createContext, useCallback, useEffect, useState } from "react";
 import { useHistory } from "react-router-dom";
 
 const AuthContext = createContext({
@@ -12,15 +12,63 @@ const AuthContext = createContext({
 
 export default AuthContext;
 const API_KEY = "AIzaSyBWzFyXq7TX9Kuc83tGPZu_n9xbbYlWzCM";
+let logoutTimer;
+const calculateRemainingTime = (expiry) => {
+    const currentTime = new Date().getTime();
+    const adjExpiryTime = new Date(expiry).getTime();
+    return adjExpiryTime - currentTime;
+};
+
+const getStoredToken = () => {
+    const storedToken = localStorage.getItem("token");
+    const storedExpiration = localStorage.getItem("expirationTime");
+    const remainingTime = calculateRemainingTime(storedExpiration);
+    if (remainingTime <= 60000) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("expirationTime");
+        return null;
+    } else
+        return {
+            token: storedToken,
+            duration: remainingTime,
+        };
+};
+
 export const AuthContextProvider = (props) => {
-    const [token, setToken] = useState();
+    // get token if present
+    let initialToken;
+    const tokenData = getStoredToken();
+    if (tokenData) {
+        initialToken = tokenData.token;
+    }
+    const [token, setToken] = useState(initialToken);
     const [error, setError] = useState();
     const userIsLoggedIn = !!token;
     const history = useHistory();
+
     // logout handler
-    const logOutHandler = () => {
+    const logOutHandler = useCallback(() => {
         setToken(null);
+        localStorage.removeItem("token");
+        localStorage.removeItem("expirationTime");
+        if (logoutTimer) {
+            clearTimeout(logoutTimer);
+        }
         history.replace("/auth");
+    }, [history]);
+    useEffect(() => {
+        if (tokenData) {
+            logoutTimer = setTimeout(logOutHandler, tokenData.duration);
+        }
+    }, [tokenData, logOutHandler]);
+
+    const loginHandler = (token, expiryTime) => {
+        setToken(token);
+        localStorage.setItem("token", token);
+        localStorage.setItem("expirationTime", expiryTime);
+        history.replace("/");
+        const expiresIn = calculateRemainingTime(expiryTime);
+        logoutTimer = setTimeout(logOutHandler, expiresIn); // expire in 1 hour
     };
 
     const authenticate = async (email, password, isLogin) => {
@@ -44,8 +92,10 @@ export const AuthContextProvider = (props) => {
             });
             const resp = await res.json();
             if (res.ok) {
-                setToken(resp.idToken);
-                history.replace("/");
+                const convertedExpiry = new Date(
+                    new Date().getTime() + +resp.expiresIn * 1000
+                );
+                loginHandler(resp.idToken, convertedExpiry.toISOString());
             } else {
                 let errorMessage = "Authentication Failed!";
                 // if (resp && resp.error && resp.error.message) {
@@ -75,7 +125,10 @@ export const AuthContextProvider = (props) => {
             );
             const res = await response.json();
             if (response.ok) {
-                setToken(res.idToken);
+                const convertedExpiry = new Date(
+                    new Date().getTime() + +res.expiresIn * 1000
+                );
+                loginHandler(res.idToken, convertedExpiry.toISOString());
             } else {
                 throw new Error("Resseting password failed!");
             }
